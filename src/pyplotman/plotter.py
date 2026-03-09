@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 import sys
 import types
-import io
+import warnings
 import numpy as np
 import h5py
 from typing import Any
@@ -12,20 +12,16 @@ from matplotlib.figure import Figure
 from matplotlib.patches import StepPatch
 from cycler import cycler
 
+def _as_h5_text(value: Any) -> str:
+    """Store user-facing metadata as UTF-8 text instead of ASCII-only bytes."""
+    return str(value)
+
 def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
     """Internal helper to save image and data using specific group names."""
     script_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
     if not script_name or script_name == '-c': script_name = 'analysis'
 
-    # --- PART A: Save Image (Byte Array) ---
-    res_plots_group = h5.require_group(groups['plots'])
-    buf = io.BytesIO()
-    fig._original_savefig(buf, format='png', dpi=fig.canvas.get_renderer().dpi)
-    img_bytes = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-    if plot_name in res_plots_group: del res_plots_group[plot_name]
-    res_plots_group.create_dataset(plot_name, data=img_bytes)
-
-    # --- PART B: Save as HDF5 Image (HDFView compatible) ---
+    # Save as HDF5 Image (HDFView compatible) ---
     img_group = h5.require_group(groups['images'])
     fig.canvas.draw()
     rgba_buf = fig.canvas.buffer_rgba()
@@ -43,7 +39,7 @@ def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
     ds.attrs['DISPLAY_ORIGIN'] = np.bytes_('UPPER_LEFT')
     ds.attrs['IMAGE_MINMAXRANGE'] = np.array([0, 255], dtype=np.uint8)
 
-    # --- PART C: Save Raw Plotting Data ---
+    # Save Raw Plotting Data ---
     data_root = h5.require_group(f"{groups['data']}/{plot_name}")
     for i, ax in enumerate(fig.axes):
         ax_label = ax.get_label()
@@ -51,12 +47,12 @@ def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
         if not ax_id: ax_id = ax_label if ax_label and not ax_label.startswith('axes') else f'axis{i}'
         ax_group = data_root.require_group(ax_id)
         
-        ax_group.attrs['xlabel'] = np.bytes_(ax.get_xlabel())
-        ax_group.attrs['ylabel'] = np.bytes_(ax.get_ylabel())
+        ax_group.attrs['xlabel'] = _as_h5_text(ax.get_xlabel())
+        ax_group.attrs['ylabel'] = _as_h5_text(ax.get_ylabel())
         ax_group.attrs['xlim'] = np.asarray(ax.get_xlim())
         ax_group.attrs['ylim'] = np.asarray(ax.get_ylim())
-        ax_group.attrs['xscale'] = np.bytes_(ax.get_xscale())
-        ax_group.attrs['yscale'] = np.bytes_(ax.get_yscale())
+        ax_group.attrs['xscale'] = _as_h5_text(ax.get_xscale())
+        ax_group.attrs['yscale'] = _as_h5_text(ax.get_yscale())
         
         lines = ax.get_lines()
         if lines:
@@ -70,7 +66,7 @@ def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
                 if 'y' in lg: del lg['y']
                 lg.create_dataset('x', data=np.asarray(x))
                 lg.create_dataset('y', data=np.asarray(y))
-                lg.attrs['label'] = np.bytes_(str(label))
+                lg.attrs['label'] = _as_h5_text(label)
 
         if ax.collections:
             coll_group = ax_group.require_group('collections')
@@ -82,7 +78,7 @@ def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
                 if len(offsets) > 0:
                     if 'offsets' in cg: del cg['offsets']
                     cg.create_dataset('offsets', data=np.asarray(offsets))
-                    cg.attrs['label'] = np.bytes_(str(label))
+                    cg.attrs['label'] = _as_h5_text(label)
 
         patches = [p for p in ax.patches if isinstance(p, StepPatch)]
         if patches:
@@ -96,7 +92,7 @@ def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
                 if 'edges' in sg: del sg['edges']
                 sg.create_dataset('values', data=np.asarray(st_data.values))
                 sg.create_dataset('edges', data=np.asarray(st_data.edges))
-                sg.attrs['label'] = np.bytes_(str(label))
+                sg.attrs['label'] = _as_h5_text(label)
 
 def _custom_figure_savefig(self, fname: str | os.PathLike, **kwargs):
     """Monkeypatched savefig that handles local multi-format and HDF5 archival.
@@ -130,8 +126,13 @@ def _custom_figure_savefig(self, fname: str | os.PathLike, **kwargs):
                     _save_to_h5_file(self, h5, base_name, groups)
             elif isinstance(dest, h5py.File):
                 _save_to_h5_file(self, dest, base_name, groups)
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(
+                f"pyplotman failed to archive plot '{base_name}' to HDF5 destination "
+                f"{dest!r}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 # Monkeypatch Figure globally
 if not hasattr(Figure, '_original_savefig'):
@@ -147,7 +148,6 @@ class CustomPLT:
     Attributes:
         hdf5_destinations (list[dict]): List of registered HDF5 save targets.
         group_images (str): Default HDF5 group for Image API datasets.
-        group_plots (str): Default HDF5 group for PNG byte-arrays.
         group_data (str): Default HDF5 group for raw numerical arrays.
     """
     
@@ -159,28 +159,24 @@ class CustomPLT:
         
         # Global Fallback Defaults
         self.group_images = "images"
-        self.group_plots = "plots"
         self.group_data = "data"
         
         self.set_defaults()
 
     def add_hdf5_dest(self, path: str | os.PathLike | h5py.File, 
                       group_images: str | None = None, 
-                      group_plots: str | None = None, 
                       group_data: str | None = None):
         """Registers an HDF5 file for automatic plot archival.
         
         Args:
             path: File path or opened h5py.File handle.
             group_images: Custom group for images (defaults to self.group_images).
-            group_plots: Custom group for byte-arrays (defaults to self.group_plots).
             group_data: Custom group for raw data (defaults to self.group_data).
         """
         self.hdf5_destinations.append({
             'path': path,
             'groups': {
                 'images': group_images or self.group_images,
-                'plots': group_plots or self.group_plots,
                 'data': group_data or self.group_data
             }
         })
