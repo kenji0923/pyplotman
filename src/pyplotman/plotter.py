@@ -43,8 +43,13 @@ def _save_to_h5_file(fig: Figure, h5: h5py.File, plot_name: str, groups: dict):
     data_root = h5.require_group(f"{groups['data']}/{plot_name}")
     for i, ax in enumerate(fig.axes):
         ax_label = ax.get_label()
-        ax_id = getattr(ax, 'name', None)
-        if not ax_id: ax_id = ax_label if ax_label and not ax_label.startswith('axes') else f'axis{i}'
+        ax_name = getattr(ax, 'name', None)
+        if ax_label and not ax_label.startswith('axes'):
+            ax_id = ax_label
+        elif ax_name and ax_name not in {'rectilinear', 'polar', '3d'}:
+            ax_id = ax_name
+        else:
+            ax_id = f'axis{i}'
         ax_group = data_root.require_group(ax_id)
         
         ax_group.attrs['xlabel'] = _as_h5_text(ax.get_xlabel())
