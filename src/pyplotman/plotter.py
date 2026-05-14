@@ -12,6 +12,19 @@ from matplotlib.figure import Figure
 from matplotlib.patches import StepPatch
 from cycler import cycler
 
+LIBERATION_SANS_FONT_DIRS = (
+    "/usr/share/fonts/liberation-sans",
+    "/usr/share/fonts/truetype/liberation",
+    "/usr/share/fonts/truetype/liberation2",
+)
+
+LIBERATION_SANS_FONT_FILES = (
+    "LiberationSans-Regular.ttf",
+    "LiberationSans-Bold.ttf",
+    "LiberationSans-Italic.ttf",
+    "LiberationSans-BoldItalic.ttf",
+)
+
 def _as_h5_text(value: Any) -> str:
     """Store user-facing metadata as UTF-8 text instead of ASCII-only bytes."""
     return str(value)
@@ -196,10 +209,14 @@ class CustomPLT:
         Applies Liberation Sans font, custom color cycle, constrained layout,
         and high-resolution save settings.
         """
-        font_path = '/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf'
-        if os.path.exists(font_path):
-            try: font_manager.fontManager.addfont(font_path)
-            except Exception: pass
+        for font_dir in LIBERATION_SANS_FONT_DIRS:
+            for font_file in LIBERATION_SANS_FONT_FILES:
+                font_path = os.path.join(font_dir, font_file)
+                if os.path.exists(font_path):
+                    try:
+                        font_manager.fontManager.addfont(font_path)
+                    except Exception:
+                        pass
 
         self._plt.rcParams['figure.constrained_layout.use'] = True
         self._plt.rcParams['figure.constrained_layout.w_pad'] = 0.125
